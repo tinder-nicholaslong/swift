@@ -20,6 +20,7 @@
 #include "swift/SIL/FormalLinkage.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILConstants.h"
+#include "swift/SILOptimizer/Utils/Devirtualize.h"
 #include "swift/Serialization/SerializedSILLoader.h"
 #include "llvm/ADT/PointerEmbeddedInt.h"
 #include "llvm/Support/CommandLine.h"
@@ -132,38 +133,14 @@ Type ConstExprFunctionState::simplifyType(Type ty) {
   return substitutionMap.empty() ? ty : ty.subst(substitutionMap);
 }
 
-// TODO: refactor this out somewhere sharable between autodiff and this code.
-static void lookupOrLinkWitnessTable(ProtocolConformanceRef confRef,
-                                     SILModule &module) {
-  // Cannot resolve abstract conformances.
-  if (!confRef.isConcrete())
-    return;
-
-  auto *conf = confRef.getConcrete();
-  auto wtable = module.lookUpWitnessTable(conf);
-  if (wtable)
-    return;
-
-  auto *decl = conf->getDeclContext()->getSelfNominalTypeDecl();
-  auto linkage = getSILLinkage(getDeclLinkage(decl), NotForDefinition);
-  auto *newTable = module.createWitnessTableDeclaration(conf, linkage);
-  newTable = module.getSILLoader()->lookupWitnessTable(newTable);
-
-  // Update linkage for witness methods.
-  // FIXME: Figure out why witnesses have shared linkage by default.
-  for (auto &entry : newTable->getEntries())
-    if (entry.getKind() == SILWitnessTable::WitnessKind::Method)
-      entry.getMethodWitness().Witness->setLinkage(linkage);
-}
-
 /// Const-evaluate `value`, which must not have been computed.
 SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
   assert(!calculatedValues.count(value));
 
   // If the client is asking for the value of a stack object that hasn't been
-  // computed, then we are in top level code, and the stack object must be a
-  // single store value.  Since this is a very different computation, split it
-  // out to its own path.
+  // computed, and if fn is null, then we are in top level code, and the
+  // stack object must be a single store value.  Since this is a very different
+  // computation, split it out to its own path.
   if (!fn && value->getType().isAddress() && isa<AllocStackInst>(value)) {
     return getSingleWriterAddressValue(value);
   }
@@ -260,15 +237,9 @@ SymbolicValue ConstExprFunctionState::computeConstantValue(SILValue value) {
     auto conf = confResult.getValue();
     auto &module = wmi->getModule();
 
-    // Look up the conformance's withness table and the member out of it.
+    // Look up the conformance's witness table and the member out of it.
     SILFunction *fn =
         module.lookUpFunctionInWitnessTable(conf, wmi->getMember()).first;
-    if (!fn) {
-      // If that failed, try force loading it, and try again.
-      lookupOrLinkWitnessTable(conf, wmi->getModule());
-      fn = module.lookUpFunctionInWitnessTable(conf, wmi->getMember()).first;
-    }
-
     // If we were able to resolve it, then we can proceed.
     if (fn)
       return SymbolicValue::getFunction(fn);
@@ -550,11 +521,6 @@ ConstExprFunctionState::computeOpaqueCallResult(ApplyInst *apply,
   return evaluator.getUnknown((SILInstruction *)apply, UnknownReason::Default);
 }
 
-// TODO: Refactor this to someplace common, this is defined in Devirtualize.cpp.
-SubstitutionMap getWitnessMethodSubstitutions(SILModule &Module, ApplySite AI,
-                                              SILFunction *F,
-                                              ProtocolConformanceRef CRef);
-
 /// Given a call to a function, determine whether it is a call to a constexpr
 /// function.  If so, collect its arguments as constants, fold it and return
 /// None.  If not, mark the results as Unknown, and return an Unknown with
@@ -598,34 +564,40 @@ ConstExprFunctionState::computeCallResult(ApplyInst *apply) {
 
   auto calleeFnType = callee->getLoweredFunctionType();
   if (calleeFnType->getGenericSignature()) {
-    ApplySite AI(apply);
-
     // Get the substitution map of the call.  This maps from the callee's space
-    // into the caller's world.
+    // into the caller's world. Witness methods require additional work to
+    // compute a mapping that is valid for the callee.
     SubstitutionMap callSubMap;
+
     if (calleeFnType->getRepresentation() ==
         SILFunctionType::Representation::WitnessMethod) {
-      // Get the conformance out of the SILFunctionType and map it into our
-      // current type space.
-      auto conformance = calleeFnType->getWitnessMethodConformance();
-      auto selfTy = conformance.getRequirement()->getSelfInterfaceType();
-      auto conf = substitutionMap.lookupConformance(
-          selfTy->getCanonicalType(), conformance.getRequirement());
+      auto protocol =
+          calleeFnType->getWitnessMethodConformance().getRequirement();
+      // Compute a mapping that maps the Self type of the protocol given by
+      // 'requirement' to the concrete type available in the substitutionMap.
+      auto protoSelfToConcreteType =
+          apply->getSubstitutionMap().subst(substitutionMap);
+      // Get a concrete protocol conformance by using the mapping for the
+      // Self type of the requirement.
+      auto conf = protoSelfToConcreteType.lookupConformance(
+          protocol->getSelfInterfaceType()->getCanonicalType(), protocol);
       if (!conf.hasValue())
         return evaluator.getUnknown((SILInstruction *)apply,
                                     UnknownReason::Default);
 
-      // Witness methods have special magic that is required to resolve them.
-      callSubMap = getWitnessMethodSubstitutions(apply->getModule(), AI, callee,
-                                                 conf.getValue());
+      callSubMap = getWitnessMethodSubstitutions(
+          apply->getModule(), ApplySite(apply), callee, conf.getValue());
+      /// Remark: If we ever start to care about evaluating classes,
+      /// getSubstitutionsForCallee() is the analogous mapping function we
+      /// should use to get correct mapping from caller to callee namespace.
+      /// Ideally, the function must be renamed as
+      /// getClassMethodSubstitutions().
     } else {
-      auto requirementSig = AI.getOrigCalleeType()->getGenericSignature();
-      callSubMap =
-          SubstitutionMap::get(requirementSig, apply->getSubstitutionMap());
+      callSubMap = apply->getSubstitutionMap();
     }
 
     // The substitution map for the callee is the composition of the callers
-    // substitution map (which is always type/conformance to a concrete type
+    // substitution map, which is always type/conformance to a concrete type
     // or conformance, with the mapping introduced by the call itself.  This
     // ensures that the callee's substitution map can map from its type
     // namespace back to concrete types and conformances.
@@ -804,15 +776,15 @@ ConstExprFunctionState::getSingleWriterAddressValue(SILValue addr) {
   // uses `getSingleWriterAddressValue` to test whether a TupleElementAddrInst
   // is really a single writer address value).
   auto *memoryObject = SymbolicValueMemoryObject::create(
-      simplifyType(addr->getType().getASTType()),
-      SymbolicValue::getUninitMemory(), evaluator.getAllocator());
+      substituteGenericParamsAndSimpify(addr->getType().getASTType()),
+      SymbolicValue::getUninitMemory(), evaluator.getASTContext());
   auto memoryAddress = SymbolicValue::getAddress(memoryObject);
 
   // Okay, check out all of the users of this value looking for semantic stores
   // into the address.  If we find more than one, then this was a var or
   // something else we can't handle.
   // We must iterate over all uses, to make sure there is a single
-  // initializer. The only permitted early exit is when we known for sure
+  // initializer. The only permitted early exit is when we know for sure
   // const-evaluation has failed.
   for (auto *use : addr->getUses()) {
     auto user = use->getUser();
@@ -823,7 +795,7 @@ ConstExprFunctionState::getSingleWriterAddressValue(SILValue addr) {
         isa<DestroyAddrInst>(user) || isa<DebugValueAddrInst>(user))
       continue;
 
-    // TODO: BeginAccess/EndAccess.
+    // TODO: Allow BeginAccess/EndAccess users.
 
     // If this is a store *to* the memory, analyze the input value.
     if (auto *si = dyn_cast<StoreInst>(user)) {
@@ -864,7 +836,6 @@ ConstExprFunctionState::getSingleWriterAddressValue(SILValue addr) {
 
     // If this is an apply_inst passing the memory address as an indirect
     // result operand, then we have a call that fills in this result.
-    //
     if (auto *apply = dyn_cast<ApplyInst>(user)) {
       auto conventions = apply->getSubstCalleeConv();
 
@@ -875,7 +846,7 @@ ConstExprFunctionState::getSingleWriterAddressValue(SILValue addr) {
       if (opNum >= numIndirectResults)
         continue;
 
-      // Otherwise this is a write.  If we have already found a value for this
+      // Otherwise this is a write. If we have already found a value for this
       // stack slot then we're done: we don't support multiple assignment.
       if (memoryObject->getValue().getKind() != SymbolicValue::UninitMemory)
         return evaluator.getUnknown(addr, UnknownReason::Default);
@@ -894,8 +865,7 @@ ConstExprFunctionState::getSingleWriterAddressValue(SILValue addr) {
         return memoryAddress;
       }
 
-      // computeCallResult will have figured out the result and cached it for
-      // us.
+      // computeCallResult will have figured out the result.
       assert(memoryObject->getValue().isConstant() &&
              "Should have found a constant result value");
       continue;
@@ -947,7 +917,7 @@ ConstExprFunctionState::getSingleWriterAddressValue(SILValue addr) {
       auto index = teai->getFieldNo();
       bool failed = updateIndexedElement(
           objectVal, /*accessPath*/ {index}, tupleEltValue, objectType,
-          /*writeOnlyOnce*/ true, evaluator.getAllocator());
+          /*writeOnlyOnce*/ true, evaluator.getASTContext());
       if (failed)
         return evaluator.getUnknown(addr, UnknownReason::Default);
       memoryObject->setValue(objectVal);
