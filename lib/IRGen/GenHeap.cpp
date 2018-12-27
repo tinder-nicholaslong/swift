@@ -196,6 +196,8 @@ namespace {
   NEVER_LOADABLE_CHECKED_REF_STORAGE_HELPER(Weak, Unknown)
   NEVER_LOADABLE_CHECKED_REF_STORAGE_HELPER(Unowned, Unknown)
   ALWAYS_LOADABLE_CHECKED_REF_STORAGE_HELPER(Unowned, Native)
+  NEVER_LOADABLE_CHECKED_REF_STORAGE_HELPER(Guard, Native)
+  NEVER_LOADABLE_CHECKED_REF_STORAGE_HELPER(Guard, Unknown)
 #undef NEVER_LOADABLE_CHECKED_REF_STORAGE_HELPER
 #undef ALWAYS_LOADABLE_CHECKED_REF_STORAGE_HELPER
 
@@ -773,6 +775,7 @@ void IRGenFunction::storeReferenceStorageExtraInhabitant(llvm::Value *index,
   // Always native versus "sometimes unknown" reference storage type policy:
   SOMETIMES_UNKNOWN(Weak)
   SOMETIMES_UNKNOWN(Unowned)
+  SOMETIMES_UNKNOWN(Guard)
 #undef SOMETIMES_UNKNOWN
 #undef ALWAYS_NATIVE
 

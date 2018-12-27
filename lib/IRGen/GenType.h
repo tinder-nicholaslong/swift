@@ -49,6 +49,7 @@ namespace swift {
   class EnumDecl;
   class UnownedStorageType;
   class WeakStorageType;
+  class GuardStorageType;
   enum IsTake_t : bool;
   
 namespace irgen {

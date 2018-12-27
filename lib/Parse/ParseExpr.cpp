@@ -2512,6 +2512,9 @@ parseClosureSignatureIfPresent(SmallVectorImpl<CaptureListEntry> &captureList,
       if (Tok.isContextualKeyword("weak")){
         ownershipLocStart = ownershipLocEnd = consumeToken(tok::identifier);
         ownershipKind = ReferenceOwnership::Weak;
+      } else if (Tok.isContextualKeyword("guard")){
+        ownershipLocStart = ownershipLocEnd = consumeToken(tok::identifier);
+        ownershipKind = ReferenceOwnership::Guard;
       } else if (Tok.isContextualKeyword("unowned")) {
         ownershipLocStart = ownershipLocEnd = consumeToken(tok::identifier);
         ownershipKind = ReferenceOwnership::Unowned;

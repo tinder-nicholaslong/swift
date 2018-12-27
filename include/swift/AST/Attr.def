@@ -271,6 +271,7 @@ CONTEXTUAL_DECL_ATTR(weak, ReferenceOwnership,
   DeclModifier |
   NotSerialized, 49)
 CONTEXTUAL_DECL_ATTR_ALIAS(unowned, ReferenceOwnership)
+CONTEXTUAL_DECL_ATTR_ALIAS(guard, ReferenceOwnership)
 DECL_ATTR(_effects, Effects,
   OnAbstractFunction |
   UserInaccessible,

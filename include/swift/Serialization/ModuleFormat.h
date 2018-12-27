@@ -352,6 +352,7 @@ enum ReferenceOwnership : uint8_t {
   Weak,
   Unowned,
   Unmanaged,
+  Guard
 };
 using ReferenceOwnershipField = BCFixed<2>;
 

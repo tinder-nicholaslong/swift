@@ -49,6 +49,7 @@ static inline llvm::StringRef keywordOf(ReferenceOwnership ownership) {
   case ReferenceOwnership::Strong:
     break;
   case ReferenceOwnership::Weak: return "weak";
+  case ReferenceOwnership::Guard: return "guard";
   case ReferenceOwnership::Unowned: return "unowned";
   case ReferenceOwnership::Unmanaged: return "unowned(unsafe)";
   }
@@ -62,6 +63,7 @@ static inline llvm::StringRef manglingOf(ReferenceOwnership ownership) {
   case ReferenceOwnership::Strong:
     break;
   case ReferenceOwnership::Weak: return "Xw";
+  case ReferenceOwnership::Guard: return "Xg";
   case ReferenceOwnership::Unowned: return "Xo";
   case ReferenceOwnership::Unmanaged: return "Xu";
   }
@@ -84,6 +86,7 @@ static inline bool isLessStrongThan(ReferenceOwnership left,
     case ReferenceOwnership::Strong: return 0;
     case ReferenceOwnership::Unowned: return -1;
     case ReferenceOwnership::Weak: return -1;
+    case ReferenceOwnership::Guard: return -1;
 #define UNCHECKED_REF_STORAGE(Name, ...) \
     case ReferenceOwnership::Name: return INT_MIN;
 #include "swift/AST/ReferenceStorage.def"
@@ -112,6 +115,7 @@ optionalityOf(ReferenceOwnership ownership) {
   case ReferenceOwnership::Unmanaged:
     return ReferenceOwnershipOptionality::Allowed;
   case ReferenceOwnership::Weak:
+  case ReferenceOwnership::Guard:
     return ReferenceOwnershipOptionality::Required;
   }
   llvm_unreachable("impossible");

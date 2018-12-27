@@ -1132,6 +1132,7 @@ private:
     if (auto referenceStorageTy = ty->getAs<ReferenceStorageType>()) {
       switch (referenceStorageTy->getOwnership()) {
       case ReferenceOwnership::Strong:
+      case ReferenceOwnership::Guard:
         llvm_unreachable("not represented with a ReferenceStorageType");
       case ReferenceOwnership::Weak: {
         auto innerTy =

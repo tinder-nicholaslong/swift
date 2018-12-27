@@ -601,6 +601,8 @@ TypeConverter::getReferenceTypeInfo(ReferenceKind Kind,
     break;
   case ReferenceKind::Unmanaged:
     break;
+  case ReferenceKind::Guard:
+    break;
   }
 
   auto *TI = makeTypeInfo<ReferenceTypeInfo>(BuiltinTI->Size,
